@@ -1,0 +1,7 @@
+# The Lambda layer of search.py (build_layer.py installs exactly these, without
+# their own dependencies, so every package is pinned here): tzdata for
+# zoneinfo, which the Lambda image has no time zone files for, and PySocks
+# for the SOCKS proxy of the engines (pure Python). Bedrock is called with
+# the boto3 of the runtime.
+PySocks==1.7.1
+tzdata==2026.5

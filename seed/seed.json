@@ -1,0 +1,243 @@
+{
+  "searches": [
+    {
+      "id": "a1b2c3d4e5f6",
+      "name": "Serverless news",
+      "query": "AWS Lambda",
+      "engines": [
+        "google_news",
+        "bing_news",
+        "yahoo"
+      ],
+      "market": "en-US",
+      "period": "week",
+      "max_results": 10,
+      "schedule": {
+        "type": "days",
+        "days": [
+          0,
+          1,
+          2,
+          3,
+          4
+        ],
+        "hour": 8
+      },
+      "timezone": "Europe/Berlin",
+      "language": "en",
+      "only_new": true,
+      "skip_empty": true,
+      "ai": true,
+      "ai_instructions": "Focus on new features and pricing; skip tutorials.",
+      "active": true,
+      "created_minutes_ago": 20160,
+      "runs": [
+        {
+          "minutes_ago": 1500,
+          "trigger": "schedule",
+          "found": 21,
+          "summary": "Two announcements stand out this week: a longer maximum run time for functions and cheaper Arm pricing in more Regions. Several posts compare cold starts across runtimes.\n• Functions may now run longer for batch work [1]\n• Arm (Graviton) pricing drops in three more Regions [2, 3]\n• A benchmark of cold starts in Python, Node.js and Java [4]",
+          "results": [
+            {
+              "title": "Example: Lambda raises the maximum run time for batch jobs",
+              "url": "https://news.example.com/2026/lambda-longer-runs",
+              "snippet": "Sample result of the demo. A longer limit lets data processing jobs finish in one invocation…",
+              "source": "Example News",
+              "engines": [
+                "google_news",
+                "bing_news"
+              ],
+              "published_hours_ago": 30
+            },
+            {
+              "title": "Example: Graviton pricing comes to three more Regions",
+              "url": "https://cloud.example.org/graviton-regions",
+              "snippet": "Sample result of the demo. Functions on arm64 cost less per GB-second in the new Regions…",
+              "source": "Cloud Example",
+              "engines": [
+                "google_news"
+              ],
+              "published_hours_ago": 34
+            },
+            {
+              "title": "Example: what the new Arm prices mean for your bill",
+              "url": "https://blog.example.net/arm-prices-bill",
+              "snippet": "Sample result of the demo. A worked example with a function that runs a million times a month…",
+              "source": "Example Blog",
+              "engines": [
+                "yahoo"
+              ],
+              "published_hours_ago": 40
+            },
+            {
+              "title": "Example: cold starts in 2026, measured",
+              "url": "https://dev.example.com/cold-starts-2026",
+              "snippet": "Sample result of the demo. Python, Node.js and Java functions with and without SnapStart…",
+              "source": "Dev Example",
+              "engines": [
+                "bing_news",
+                "yahoo"
+              ],
+              "published_hours_ago": 46
+            }
+          ]
+        },
+        {
+          "minutes_ago": 60,
+          "trigger": "manual",
+          "found": 19,
+          "summary": "Little news since the last digest: one post on observability and a reminder of an older runtime reaching its end of support.\n• Tracing functions without an agent, step by step [1]\n• An older Python runtime reaches end of support next quarter [2]",
+          "results": [
+            {
+              "title": "Example: tracing serverless functions without an agent",
+              "url": "https://dev.example.com/tracing-without-agent",
+              "snippet": "Sample result of the demo. OpenTelemetry layers and what they add to the cold start…",
+              "source": "Dev Example",
+              "engines": [
+                "google_news"
+              ],
+              "published_hours_ago": 5
+            },
+            {
+              "title": "Example: Python runtime end of support, what to check",
+              "url": "https://news.example.com/2026/python-runtime-eos",
+              "snippet": "Sample result of the demo. Functions on the old runtime keep working but get no patches…",
+              "source": "Example News",
+              "engines": [
+                "bing_news"
+              ],
+              "published_hours_ago": 9
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "b2c3d4e5f6a1",
+      "name": "Terraform releases",
+      "query": "Terraform release",
+      "engines": [
+        "google_news",
+        "yahoo"
+      ],
+      "market": "en-GB",
+      "period": "day",
+      "max_results": 5,
+      "schedule": {
+        "type": "hours",
+        "every": 12
+      },
+      "timezone": "Europe/London",
+      "language": "en",
+      "only_new": true,
+      "skip_empty": true,
+      "ai": false,
+      "ai_instructions": "",
+      "active": true,
+      "created_minutes_ago": 10080,
+      "runs": [
+        {
+          "minutes_ago": 720,
+          "trigger": "schedule",
+          "found": 6,
+          "results": [
+            {
+              "title": "Example: Terraform 1.16 patch release fixes a plan crash",
+              "url": "https://news.example.com/2026/terraform-116-patch",
+              "snippet": "Sample result of the demo. The patch fixes a crash with ephemeral values in modules…",
+              "source": "Example News",
+              "engines": [
+                "google_news",
+                "yahoo"
+              ],
+              "published_hours_ago": 14
+            }
+          ]
+        },
+        {
+          "minutes_ago": 0,
+          "trigger": "schedule",
+          "found": 5,
+          "status": "empty",
+          "results": []
+        }
+      ]
+    },
+    {
+      "id": "c3d4e5f6a1b2",
+      "name": "Nova models",
+      "query": "Amazon Nova model",
+      "engines": [
+        "google_news",
+        "bing_news"
+      ],
+      "market": "fr-FR",
+      "period": "month",
+      "max_results": 10,
+      "schedule": {
+        "type": "days",
+        "days": [
+          0
+        ],
+        "hour": 9
+      },
+      "timezone": "Europe/Paris",
+      "language": "fr",
+      "only_new": true,
+      "skip_empty": false,
+      "ai": true,
+      "ai_instructions": "Only announcements of new models or Regions.",
+      "active": true,
+      "created_minutes_ago": 30240,
+      "runs": [
+        {
+          "minutes_ago": 4320,
+          "trigger": "schedule",
+          "found": 12,
+          "summary": "Une seule annonce ce mois-ci : un modèle disponible dans de nouvelles Régions européennes.\n• Disponibilité étendue en Europe [1]",
+          "results": [
+            {
+              "title": "Exemple : un modèle Nova arrive dans de nouvelles Régions",
+              "url": "https://actu.example.fr/nova-regions",
+              "snippet": "Résultat d’exemple de la démo. Le modèle est accessible via un profil d’inférence européen…",
+              "source": "Actu Exemple",
+              "engines": [
+                "google_news",
+                "bing_news"
+              ],
+              "published_hours_ago": 80
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "d4e5f6a1b2c3",
+      "name": "Конференции",
+      "query": "serverless конференция",
+      "engines": [
+        "google_news",
+        "yahoo"
+      ],
+      "market": "ru-RU",
+      "period": "any",
+      "max_results": 10,
+      "schedule": {
+        "type": "days",
+        "days": [
+          5
+        ],
+        "hour": 18
+      },
+      "timezone": "Europe/Moscow",
+      "language": "ru",
+      "only_new": true,
+      "skip_empty": true,
+      "ai": false,
+      "ai_instructions": "",
+      "active": false,
+      "created_minutes_ago": 43200,
+      "runs": []
+    }
+  ]
+}
