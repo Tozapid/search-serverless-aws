@@ -6,7 +6,7 @@ Everything is Terraform and AWS managed services: no third-party API, no API key
 
 ## Demo
 
-**The address appears here after the first deploy** (`terraform output site_url`).
+**<https://dez6kwn58upj9.cloudfront.net>**
 
 Sign in with `demo@example.com` / `Demo-Password-1` (the fields are filled in for you).
 
