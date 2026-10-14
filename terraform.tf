@@ -11,8 +11,10 @@ terraform {
 
   required_providers {
     aws = {
-      source  = "hashicorp/aws"
-      version = "~> 6.0"
+      source = "hashicorp/aws"
+      # 6.69.0 cannot publish a Lambda layer ("decomposing request:
+      # bufio.Scanner: token too long", hashicorp/terraform-provider-aws#50474).
+      version = "~> 6.0, != 6.69.0"
     }
     archive = {
       source  = "hashicorp/archive"
