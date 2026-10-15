@@ -646,7 +646,9 @@
             el("dt", {}, t("field.schedule")), el("dd", {}, t(item.active ? "facts.inDigest" : "facts.inDigestOff")),
           ] : [
             el("dt", {}, t("field.schedule")), el("dd", {}, `${scheduleText(item)} (${item.timezone})`),
-            el("dt", {}, t("facts.next")), el("dd", {}, item.active && item.next_run ? when(item.next_run) : t("search.offShort")),
+            el("dt", {}, t("facts.next")), el("dd", {}, item.active && item.next_run
+              ? when(item.next_run) + (item.prepared_at ? " · " + t("facts.prepared", { date: when(item.prepared_at) }) : "")
+              : t("search.offShort")),
             el("dt", {}, t("field.recipient")), el("dd", {}, [item.recipient + " ", destination(item.recipient, draw)]),
           ]),
           el("dt", {}, t("facts.mode")), el("dd", {}, [
@@ -770,6 +772,7 @@
         el("span", { class: statusClass(run.status) }, sent),
         el("span", { class: "muted small" }, t("runs.found", { count: run.found, fresh: run.new })),
         el("span", { class: "muted small" }, t("trigger." + run.trigger)),
+        run.collected ? el("span", { class: "muted small" }, t("runs.collected", { date: when(run.collected) })) : null,
       ]),
       el("div", {}, [
         run.ai ? el("p", { class: "muted small" }, t("ai." + run.ai)) : null,

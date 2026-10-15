@@ -23,14 +23,18 @@ a new temporary password, reset of two-factor sign-in, disable and enable,
 the administrator role, delete (with all the user's searches).
 
 Tick. EventBridge invokes the function every TICK_MINUTES with
-{"action": "tick"}. It finds the active searches whose next_run has come
-(the sparse index "due"), moves each next_run to its next time, and hands
-every search to an asynchronous invocation of its own ({"action": "run"}),
-so that a slow engine holds up only its own search.
+{"action": "tick"}. The searches are collected ahead of their mail, up to
+COLLECT_LEAD_MINUTES before it, through a queue: a tick starts at most one
+collection, an asynchronous invocation of its own ({"action": "collect"}),
+and none while another is under way, so that the engines never hear from
+two searches at once. The collection keeps what is new and its AI digest in
+REPORT#<id>. At next_run (the sparse index "due") the tick moves next_run on
+and sends the mail from what was collected, less what has gone out since.
 
-Run. The engines are read in parallel (engines.py) and their lists merged;
-only results the search has not sent before count, unless it wants all of
-them. With nothing new and skip_empty on there is no mail. With ai on, a model
+Run. The engines of one search are read in parallel (engines.py) and their
+lists merged; only results the search has not sent before count, unless it
+wants all of them. With nothing new and skip_empty on there is no mail.
+"Run now" on the page collects and sends at once ({"action": "run"}). With ai on, a model
 of Amazon Bedrock (Converse API, model AI_MODEL) writes a short
 digest above the list; the month's spend is counted in DynamoDB and the
 digest stops at AI_MONTHLY_LIMIT dollars until the next month. The mail goes
@@ -41,17 +45,21 @@ Combined digest. A user may gather all their searches into one email
 zone, the address, the language and skip_empty, and only it is in the index
 "due"; at its time every active search of the user is read and the new
 results of all of them go out in one message, a section per search, each
-with its own AI digest if the search wants one.
+with its own AI digest if the search wants one; every search is collected
+in the queue on its own.
 
 DynamoDB: pk = USER#<email>, sk = SEARCH#<id> (name, query, engines, market,
 period, max_results, schedule, timezone, recipient, language, only_new,
 skip_empty, ai, ai_instructions, active, created_at, updated_at, next_run,
-due, last_run, last_status, last_count, last_error);
+due, collect_after, collecting, retry_after, prepared, prepared_at,
+last_run, last_status, last_count, last_error);
+pk = USER#<email>, sk = REPORT#<id> (for: the time of the mail, at, found,
+errors, results, summary, ai, ai_error, expires): what the queue collected;
 pk = USER#<email>, sk = SEEN#<id> (keys: the URLs already sent, newest last);
 pk = USER#<email>, sk = RUN#<id>#<time>#<microseconds> (at, trigger, status, found, new,
 sent, errors, ai, summary, results, expires);
 pk = USER#<email>, sk = DIGEST (combined, schedule, timezone, recipient,
-language, skip_empty, updated_at, next_run, due, last_run, last_status,
+language, skip_empty, updated_at, next_run, due, collect_after, last_run, last_status,
 last_count, last_error);
 pk = SETTINGS, sk = proxy (enabled, direct_first, engines, proxies: a list
 of id, scheme, host, port, username, password; updated_at, updated_by): the
@@ -98,6 +106,15 @@ PROXY_SECONDS = 60
 MAX_PROXIES = 50
 # Channels a preview asks per engine: it has the 30 seconds of API Gateway.
 PREVIEW_TRIES = 2
+# The queue: a collection not finished in this time is taken for lost; when
+# every engine fails, the search is asked again after RETRY_MINUTES if its
+# mail is that far off; a mail waits for its collections LATE_MINUTES at most.
+COLLECT_STALE = timedelta(minutes=15)
+RETRY_MINUTES = 30
+LATE_MINUTES = 120
+REPORT_PREFIX = "REPORT#"
+# Results a collection keeps for its mail: all that every engine may give.
+REPORT_RESULTS = 200
 _proxy = None
 EMAIL_RE = re.compile(r"^[^@\s]{1,64}@[^@\s]{1,190}\.[^@\s]{2,}$")
 QUERY_LIMIT = 300
@@ -163,6 +180,8 @@ class ApiError(Exception):
 def handler(event, context):
     if isinstance(event, dict) and event.get("action") == "tick":
         return tick()
+    if isinstance(event, dict) and event.get("action") == "collect":
+        return collect_report(event["owner"], event["id"], event["for"])
     if isinstance(event, dict) and event.get("action") == "run":
         return run_search(event["owner"], event["id"], event.get("trigger") or "schedule")
     if isinstance(event, dict) and event.get("action") == "digest":
@@ -212,48 +231,123 @@ def next_run(schedule, zone, after):
 
 
 def tick():
+    """Sends the mail whose time has come and starts at most one collection.
+
+    Every target in the index "due" (an active search, or a combined digest
+    in place of its user's searches) has its time, next_run. From
+    collect_after, up to LEAD_MINUTES before it, each of its searches waits
+    in the queue to be collected; the tick starts the one whose mail is due
+    first, and only when no other collection is under way, so that the
+    engines are asked by one search at a time, TICK_MINUTES apart. At its
+    time the target sends what its searches have collected; a search that
+    has not been collected holds the mail back until LATE_MINUTES after.
+    """
+    moment = now_utc()
+    now = iso(moment)
+    lead = timedelta(minutes=lead_minutes())
+    late = iso(moment - timedelta(minutes=LATE_MINUTES))
+    sent = 0
+    queue = []
+    busy = False
+    for target in due_targets(iso(moment + lead)):
+        when = target["next_run"]
+        searches = target_searches(target)
+        if when <= now and (all(search.get("prepared") == when for search in searches) or when <= late):
+            sent += deliver(target, searches, moment)
+            continue
+        opens = target.get("collect_after") or iso(parse_time(when) - lead)
+        for search in searches:
+            if collecting(search, moment):
+                busy = True
+            elif search.get("prepared") != when and opens <= now and search.get("retry_after", "") <= now:
+                queue.append((when, search.get("created_at", ""), search))
+    started = 0
+    if not busy:
+        for when, _, search in sorted(queue, key=lambda job: job[:2]):
+            if claim_collection(search, moment):
+                invoke_self({"action": "collect", "owner": search["pk"][len("USER#"):], "id": search_id_of(search), "for": when})
+                started = 1
+                break
+    logger.info("tick: %d sent, %d collecting, %d queued%s", sent, started, len(queue), " behind a running collection" if busy else "")
+    return {"sent": sent, "started": started, "queued": len(queue) - started}
+
+
+def lead_minutes():
+    return int(os.environ.get("COLLECT_LEAD_MINUTES", "180"))
+
+
+def parse_time(value):
+    return datetime.strptime(value, TIME_FORMAT).replace(tzinfo=timezone.utc)
+
+
+# The targets whose time is before the horizon: active searches and combined
+# digests, read in full (the index holds only the keys).
+def due_targets(horizon):
     from boto3.dynamodb.conditions import Key
 
-    moment = now_utc()
-    started = 0
     kwargs = {
         "IndexName": "due",
-        "KeyConditionExpression": Key("due").eq("1") & Key("next_run").lte(iso(moment)),
+        "KeyConditionExpression": Key("due").eq("1") & Key("next_run").lte(horizon),
     }
+    targets = []
     while True:
         page = table().query(**kwargs)
         for key in page.get("Items", []):
             item = table().get_item(Key={"pk": key["pk"], "sk": key["sk"]}).get("Item")
-            digest = item and item["sk"] == DIGEST_KEY
-            if not item or not item.get("combined" if digest else "active") or item.get("next_run", "") > iso(moment):
-                continue
-            if claim(item, moment):
-                owner = item["pk"][len("USER#"):]
-                if digest:
-                    start_digest(owner, "schedule")
-                else:
-                    start_run(owner, item["sk"][len("SEARCH#"):], "schedule")
-                started += 1
+            if item and item.get("combined" if item["sk"] == DIGEST_KEY else "active") and item.get("next_run", "~") <= horizon:
+                targets.append(item)
         if not page.get("LastEvaluatedKey"):
-            break
+            return targets
         kwargs["ExclusiveStartKey"] = page["LastEvaluatedKey"]
-    logger.info("tick: %d searches started", started)
-    return {"started": started}
 
 
-# The search moves on to its next time before it runs, and only if no other
-# tick has moved it already: a search runs once per time even when ticks
+def target_searches(target):
+    if target["sk"] == DIGEST_KEY:
+        return [search for search in user_searches(target["pk"][len("USER#"):]) if search.get("active")]
+    return [target]
+
+
+def collecting(search, moment):
+    return search.get("collecting", "") > iso(moment - COLLECT_STALE)
+
+
+# The target moves on to its next time before its mail goes, and only if no
+# other tick has moved it already: a mail goes once per time even when ticks
 # overlap.
 def claim(item, moment):
     from botocore.exceptions import ClientError
 
-    upcoming = iso(next_run(item["schedule"], item["timezone"], moment))
+    upcoming = next_run(item["schedule"], item["timezone"], moment)
     try:
         table().update_item(
             Key={"pk": item["pk"], "sk": item["sk"]},
-            UpdateExpression="SET next_run = :next",
+            UpdateExpression="SET next_run = :next, collect_after = :opens",
             ConditionExpression="next_run = :old",
-            ExpressionAttributeValues={":next": upcoming, ":old": item["next_run"]},
+            ExpressionAttributeValues={":next": iso(upcoming), ":opens": collect_after(upcoming, moment), ":old": item["next_run"]},
+        )
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            return False
+        raise
+    return True
+
+
+# The collection for the next mail starts no earlier than LEAD_MINUTES
+# before it, and not before now: after the mail before it, whose results
+# then count as sent.
+def collect_after(upcoming, moment):
+    return iso(max(upcoming - timedelta(minutes=lead_minutes()), moment))
+
+
+def claim_collection(search, moment):
+    from botocore.exceptions import ClientError
+
+    try:
+        table().update_item(
+            Key={"pk": search["pk"], "sk": search["sk"]},
+            UpdateExpression="SET collecting = :now",
+            ConditionExpression="attribute_exists(pk) AND (attribute_not_exists(collecting) OR collecting < :stale)",
+            ExpressionAttributeValues={":now": iso(moment), ":stale": iso(moment - COLLECT_STALE)},
         )
     except ClientError as exc:
         if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
@@ -315,30 +409,37 @@ def gather(search):
     seen = load_seen(search) if search.get("only_new", True) else []
     seen_set = set(seen)
     fresh = [item for item in results if item["key"] not in seen_set]
-    return {"search": search, "results": results, "errors": errors, "seen": seen, "fresh": fresh}
+    return {"search": search, "count": len(results), "errors": errors, "seen": seen, "fresh": fresh}
+
+
+def summarize(found):
+    found["summary"], found["ai"], found["ai_error"] = digest_text(found["search"], found["fresh"])
+
+
+# Every engine failed and found nothing.
+def failed(found):
+    return bool(found["errors"]) and not found["count"]
 
 
 def new_record(found, moment, trigger):
-    return {
+    record = {
         "at": iso(moment),
         "trigger": trigger,
-        "found": len(found["results"]),
+        "found": found["count"],
         "new": len(found["fresh"]),
         "errors": found["errors"],
         "sent": False,
-        "ai": "",
-        "summary": "",
+        "ai": found.get("ai", ""),
+        "summary": found.get("summary", ""),
         "status": "ok",
     }
-
-
-def add_summary(found, record):
-    summary, ai_status, ai_error = digest_text(found["search"], found["fresh"])
-    record["ai"] = ai_status
-    record["summary"] = summary
-    if ai_error:
-        record["ai_error"] = ai_error
-    found["summary"] = summary
+    if found.get("ai_error"):
+        record["ai_error"] = found["ai_error"]
+    if found.get("collected"):
+        record["collected"] = found["collected"]
+    if found.get("missed"):
+        record["status"] = "missed"
+    return record
 
 
 def finish(found, record, moment):
@@ -357,6 +458,14 @@ def known_engines(search):
     return chosen or [engine for engine in DEFAULTS["engines"] if engine in engines.ENGINES]
 
 
+# With the combined digest on, its address and language count.
+def as_in_digest(search, digest):
+    if not digest.get("combined"):
+        return search
+    return {**search, **{key: digest[key] for key in ("recipient", "language")}}
+
+
+# Collected now and sent now: "run now" from the page.
 def run_search(owner, search_id, trigger):
     search = get_search(owner, search_id)
     if not search:
@@ -364,16 +473,24 @@ def run_search(owner, search_id, trigger):
     digest = get_digest(owner)
     if trigger == "schedule" and (not search.get("active") or digest.get("combined")):
         return {"skipped": "inactive"}
-    if digest.get("combined"):
-        # With the combined digest on, its address and language count.
-        search = {**search, **{key: digest[key] for key in ("recipient", "language")}}
+    search = as_in_digest(search, digest)
     moment = now_utc()
     found = gather(search)
+    summarize(found)
+    record = send_search(found, moment, trigger)
+    # The results collected for the next mail may have gone out now.
+    drop_report(search)
+    return {"status": record["status"], "new": record["new"], "sent": record["sent"]}
+
+
+def send_search(found, moment, trigger):
+    search = found["search"]
     record = new_record(found, moment, trigger)
-    if not found["fresh"] and search.get("skip_empty", True):
-        record["status"] = "error" if found["errors"] and not found["results"] else "empty"
+    if found.get("missed"):
+        logger.warning("%s was not collected in time", search["sk"])
+    elif not found["fresh"] and search.get("skip_empty", True):
+        record["status"] = "error" if failed(found) else "empty"
     else:
-        add_summary(found, record)
         try:
             if not mail_enabled():
                 record["status"] = "no_mail"
@@ -385,28 +502,33 @@ def run_search(owner, search_id, trigger):
             record["status"] = "not_sent"
             record["send_error"] = str(exc)[:300]
     finish(found, record, moment)
-    return {"status": record["status"], "new": record["new"], "sent": record["sent"]}
+    return record
 
 
-# All active searches of the user in one message, on the digest's schedule.
+# All active searches of the user in one message, collected now.
 def run_digest(owner, trigger):
     digest = get_digest(owner)
     if trigger == "schedule" and not digest.get("combined"):
         return {"skipped": "inactive"}
-    searches = [search for search in user_searches(owner) if search.get("active")]
+    searches = [as_in_digest(search, digest) for search in user_searches(owner) if search.get("active")]
     moment = now_utc()
     with concurrent.futures.ThreadPoolExecutor(max_workers=ENGINE_WORKERS) as pool:
         gathered = list(pool.map(gather, searches))
-    records = [new_record(found, moment, "digest") for found in gathered]
-    with_news = [index for index, found in enumerate(gathered) if found["fresh"]]
+        list(pool.map(summarize, [found for found in gathered if found["fresh"]]))
+    result = send_digest(owner, digest, gathered, moment)
+    for search in searches:
+        drop_report(search)
+    return result
+
+
+def send_digest(owner, digest, gathered, moment):
+    with_news = [found for found in gathered if found["fresh"]]
     status = "ok"
     error = ""
     sent = False
     if not with_news and digest.get("skip_empty", True):
-        status = "error" if gathered and all(found["errors"] and not found["results"] for found in gathered) else "empty"
+        status = "error" if gathered and all(failed(found) for found in gathered) else "empty"
     else:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=ENGINE_WORKERS) as pool:
-            list(pool.map(lambda index: add_summary(gathered[index], records[index]), with_news))
         # A search with nothing new shows in the message only if it failed.
         sections = [found for found in gathered if found["fresh"] or found["errors"]]
         try:
@@ -419,9 +541,12 @@ def run_digest(owner, trigger):
             logger.exception("combined digest of %s not sent", owner)
             status = "not_sent"
             error = str(exc)[:300]
-    for found, record in zip(gathered, records):
-        if not found["fresh"]:
-            record["status"] = "error" if found["errors"] and not found["results"] else "empty"
+    for found in gathered:
+        record = new_record(found, moment, "digest")
+        if found.get("missed"):
+            logger.warning("%s was not collected in time", found["search"]["sk"])
+        elif not found["fresh"]:
+            record["status"] = "error" if failed(found) else "empty"
         elif sent:
             record["sent"] = True
         elif status == "no_mail":
@@ -437,7 +562,125 @@ def run_digest(owner, trigger):
             f"{found['search'].get('name') or found['search']['query']}: {engines.ENGINES.get(name, name)}"
             for found in gathered for name in found["errors"])
     save_digest_run(owner, {"at": iso(moment), "status": status, "count": count, "error": error[:500]})
-    return {"status": status, "new": count, "sent": sent, "searches": len(searches)}
+    return {"status": status, "new": count, "sent": sent, "searches": len(gathered)}
+
+
+# Queue ----------------------------------------------------------------------
+
+# One search collected ahead of the mail at `when` ({"action": "collect"}):
+# the results new to it, the AI digest, kept in REPORT#<id> until the tick
+# sends them. When every engine fails and the mail is far enough off, the
+# search goes back to the queue to be asked again in RETRY_MINUTES.
+def collect_report(owner, search_id, when):
+    search = get_search(owner, search_id)
+    if not search:
+        return {"skipped": "gone"}
+    digest = get_digest(owner)
+    target = digest if digest.get("combined") else search
+    if not search.get("active") or target.get("next_run") != when:
+        release(search, {})
+        return {"skipped": "moved"}
+    search = as_in_digest(search, digest)
+    moment = now_utc()
+    found = gather(search)
+    if failed(found) and parse_time(when) - moment >= timedelta(minutes=RETRY_MINUTES):
+        release(search, {"retry_after": iso(moment + timedelta(minutes=RETRY_MINUTES))})
+        return {"status": "retry"}
+    summarize(found)
+    table().put_item(Item=clean_item({
+        "pk": search["pk"],
+        "sk": REPORT_PREFIX + search_id_of(search),
+        "for": when,
+        "at": iso(moment),
+        "found": found["count"],
+        "errors": found["errors"],
+        "results": [{**public_result(item), "key": item["key"]} for item in found["fresh"][:REPORT_RESULTS]],
+        "summary": found["summary"],
+        "ai": found["ai"],
+        "ai_error": found["ai_error"],
+        "expires": int((parse_time(when) + timedelta(days=2)).timestamp()),
+    }))
+    release(search, {"prepared": when, "prepared_at": iso(moment)})
+    return {"status": "prepared", "new": len(found["fresh"])}
+
+
+# The search leaves the running collection, with the fields given.
+def release(search, fields):
+    from botocore.exceptions import ClientError
+
+    names = sorted(fields)
+    expression = "REMOVE collecting"
+    if names:
+        expression = "SET " + ", ".join(f"{name} = :{name}" for name in names) + " " + expression
+    try:
+        table().update_item(
+            Key={"pk": search["pk"], "sk": search["sk"]},
+            UpdateExpression=expression,
+            ConditionExpression="attribute_exists(pk)",
+            ExpressionAttributeValues={f":{name}": fields[name] for name in names},
+        )
+    except ClientError as exc:
+        # The search was deleted while it was collected.
+        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+
+
+# What the search collected for the mail at `when`, less what has gone out
+# since; a search without it is "missed".
+def load_report(search, when):
+    item = table().get_item(Key={"pk": search["pk"], "sk": REPORT_PREFIX + search_id_of(search)}).get("Item")
+    if search.get("prepared") != when or not item or item.get("for") != when:
+        return {"search": search, "count": 0, "errors": {}, "seen": [], "fresh": [], "missed": True}
+    item = plain(item)
+    seen = load_seen(search) if search.get("only_new", True) else []
+    seen_set = set(seen)
+    results = item.get("results", [])
+    fresh = [result for result in results if result["key"] not in seen_set]
+    found = {
+        "search": search,
+        "count": item.get("found", 0),
+        "errors": item.get("errors", {}),
+        "seen": seen,
+        "fresh": fresh,
+        "collected": item["at"],
+    }
+    # The numbers of the AI digest refer to the results it was written for.
+    if len(fresh) == len(results):
+        found.update(summary=item.get("summary", ""), ai=item.get("ai", ""), ai_error=item.get("ai_error", ""))
+    return found
+
+
+def drop_report(search):
+    if search.get("prepared") or search.get("prepared_at"):
+        table().delete_item(Key={"pk": search["pk"], "sk": REPORT_PREFIX + search_id_of(search)})
+        from botocore.exceptions import ClientError
+
+        try:
+            table().update_item(
+                Key={"pk": search["pk"], "sk": search["sk"]},
+                UpdateExpression="REMOVE prepared, prepared_at",
+                ConditionExpression="attribute_exists(pk)",
+                ExpressionAttributeValues={},
+            )
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+                raise
+
+
+# The mail of a target at its time, from what its searches collected.
+def deliver(target, searches, moment):
+    when = target["next_run"]
+    if not claim(target, moment):
+        return 0
+    owner = target["pk"][len("USER#"):]
+    if target["sk"] == DIGEST_KEY:
+        gathered = [load_report(as_in_digest(search, target), when) for search in searches]
+        send_digest(owner, target, gathered, moment)
+    else:
+        send_search(load_report(searches[0], when), moment, "schedule")
+    for search in searches:
+        drop_report(search)
+    return 1
 
 
 def public_result(item):
@@ -806,7 +1049,8 @@ def api_route(method, parts, event, owner):
             "languages": list(LANGUAGES),
             "every_hours": list(EVERY_HOURS),
             "max_searches": int(os.environ.get("MAX_SEARCHES", "20")),
-            "tick_minutes": int(os.environ.get("TICK_MINUTES", "60")),
+            "tick_minutes": int(os.environ.get("TICK_MINUTES", "5")),
+            "lead_minutes": lead_minutes(),
             "sender": os.environ.get("SENDER", ""),
             "mail": mail_enabled(),
             "demo": demo(),
@@ -1160,7 +1404,8 @@ def search_runs(search):
         ScanIndexForward=False,
         Limit=RUNS_SHOWN,
     )
-    keys = ("at", "trigger", "status", "found", "new", "sent", "errors", "ai", "ai_error", "summary", "results", "send_error")
+    keys = ("at", "trigger", "status", "found", "new", "sent", "errors", "ai", "ai_error", "summary", "results", "send_error",
+            "collected")
     return [plain({key: item.get(key) for key in keys if key in item}) for item in page.get("Items", [])]
 
 
@@ -1197,9 +1442,17 @@ def create_search(owner, fields):
     return item
 
 
+# What changes the results or their digest sends the search back to the
+# queue: what it collected no longer fits.
+COLLECTED_FROM = {"query", "engines", "market", "period", "max_results", "only_new", "language", "ai", "ai_instructions"}
+
+
 def update_search(search, fields):
     moment = now_utc()
     item = {**search, **fields, "updated_at": iso(moment)}
+    if COLLECTED_FROM & set(fields):
+        for key in ("prepared", "prepared_at", "retry_after"):
+            item.pop(key, None)
     if {"schedule", "timezone", "active"} & set(fields):
         schedule_fields(item, moment, get_digest(item["pk"][len("USER#"):]).get("combined"))
     table().put_item(Item=clean_item(item))
@@ -1211,18 +1464,21 @@ def update_search(search, fields):
 # user is on: then the digest is there instead.
 def schedule_fields(item, moment, combined=False):
     if item.get("active") and not combined:
+        upcoming = next_run(item["schedule"], item["timezone"], moment)
         item["due"] = "1"
-        item["next_run"] = iso(next_run(item["schedule"], item["timezone"], moment))
+        item["next_run"] = iso(upcoming)
+        item["collect_after"] = collect_after(upcoming, moment)
     else:
-        item.pop("due", None)
-        item.pop("next_run", None)
+        for key in ("due", "next_run", "collect_after"):
+            item.pop(key, None)
 
 
 def delete_search(search):
     from boto3.dynamodb.conditions import Key
 
     sid = search_id_of(search)
-    keys = [{"pk": search["pk"], "sk": search["sk"]}, {"pk": search["pk"], "sk": "SEEN#" + sid}]
+    keys = [{"pk": search["pk"], "sk": search["sk"]}, {"pk": search["pk"], "sk": "SEEN#" + sid},
+            {"pk": search["pk"], "sk": REPORT_PREFIX + sid}]
     kwargs = {
         "KeyConditionExpression": Key("pk").eq(search["pk"]) & Key("sk").begins_with(f"RUN#{sid}#"),
         "ProjectionExpression": "pk, sk",
@@ -1464,11 +1720,13 @@ def update_digest(owner, fields):
     before = get_digest(owner)
     item = {**before, **fields, "updated_at": iso(moment)}
     if item["combined"]:
+        upcoming = next_run(item["schedule"], item["timezone"], moment)
         item["due"] = "1"
-        item["next_run"] = iso(next_run(item["schedule"], item["timezone"], moment))
+        item["next_run"] = iso(upcoming)
+        item["collect_after"] = collect_after(upcoming, moment)
     else:
-        item.pop("due", None)
-        item.pop("next_run", None)
+        for key in ("due", "next_run", "collect_after"):
+            item.pop(key, None)
     table().put_item(Item=clean_item(item))
     if item["combined"] != before["combined"]:
         for search in user_searches(owner):
@@ -1490,6 +1748,8 @@ def public_search(item):
             "language", "only_new", "skip_empty", "ai", "ai_instructions", "active", "created_at", "updated_at",
             "next_run", "last_run", "last_status", "last_count", "last_error")
     public = {"id": search_id_of(item), "owner": item["pk"][len("USER#"):], **{key: item.get(key) for key in keys}}
+    # When the results for the next mail were collected, if they were.
+    public["prepared_at"] = item.get("prepared_at") if item.get("prepared") and item.get("prepared") == item.get("next_run") else None
     public["engines"] = known_engines(item)
     return plain(public)
 

@@ -55,8 +55,8 @@ data "aws_iam_policy_document" "lambda" {
     resources = [aws_cognito_user_pool.main.arn]
   }
 
-  # The tick hands each due search, and the page each "run now", to an
-  # invocation of its own.
+  # The tick hands each collection of the queue, and the page each "run
+  # now", to an invocation of its own.
   statement {
     sid       = "RunSearches"
     actions   = ["lambda:InvokeFunction"]

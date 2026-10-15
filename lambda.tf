@@ -75,24 +75,25 @@ resource "aws_lambda_function" "app" {
 
   environment {
     variables = {
-      TABLE_NAME          = aws_dynamodb_table.main.name
-      SITE_URL            = local.site_url
-      USER_POOL_ID        = aws_cognito_user_pool.main.id
-      ADMIN_GROUP         = aws_cognito_user_group.admins.name
-      SENDER              = var.sender_address
-      CONFIGURATION_SET   = local.mail ? aws_sesv2_configuration_set.digests[0].configuration_set_name : ""
-      MAIL_ENABLED        = tostring(local.mail)
-      DEMO                = tostring(var.demo)
-      VERSION             = local.version
-      RELEASES_REPOSITORY = var.releases_repository
-      TICK_MINUTES        = tostring(var.tick_minutes)
-      MAX_SEARCHES        = tostring(var.max_searches_per_user)
-      AI_ENABLED          = tostring(var.ai_enabled)
-      AI_MODEL            = var.ai_model
-      AI_REGION           = var.ai_region
-      AI_PRICE_INPUT      = tostring(var.ai_price_per_mtok.input)
-      AI_PRICE_OUTPUT     = tostring(var.ai_price_per_mtok.output)
-      AI_MONTHLY_LIMIT    = tostring(var.ai_monthly_limit_usd)
+      TABLE_NAME           = aws_dynamodb_table.main.name
+      SITE_URL             = local.site_url
+      USER_POOL_ID         = aws_cognito_user_pool.main.id
+      ADMIN_GROUP          = aws_cognito_user_group.admins.name
+      SENDER               = var.sender_address
+      CONFIGURATION_SET    = local.mail ? aws_sesv2_configuration_set.digests[0].configuration_set_name : ""
+      MAIL_ENABLED         = tostring(local.mail)
+      DEMO                 = tostring(var.demo)
+      VERSION              = local.version
+      RELEASES_REPOSITORY  = var.releases_repository
+      TICK_MINUTES         = tostring(var.tick_minutes)
+      COLLECT_LEAD_MINUTES = tostring(var.collect_lead_minutes)
+      MAX_SEARCHES         = tostring(var.max_searches_per_user)
+      AI_ENABLED           = tostring(var.ai_enabled)
+      AI_MODEL             = var.ai_model
+      AI_REGION            = var.ai_region
+      AI_PRICE_INPUT       = tostring(var.ai_price_per_mtok.input)
+      AI_PRICE_OUTPUT      = tostring(var.ai_price_per_mtok.output)
+      AI_MONTHLY_LIMIT     = tostring(var.ai_monthly_limit_usd)
     }
   }
 
@@ -118,11 +119,11 @@ resource "aws_lambda_function_event_invoke_config" "app" {
   maximum_retry_attempts = 0
 }
 
-# The tick: every tick_minutes the function looks for the searches that are
-# due and starts each of them.
+# The tick: every tick_minutes the function sends the mail that is due and
+# starts the next collection of the queue.
 resource "aws_cloudwatch_event_rule" "tick" {
   name                = "${local.name}-tick"
-  description         = "Starts the scheduled searches that are due."
+  description         = "Sends the mail that is due and starts the next collection of the queue."
   schedule_expression = "rate(${var.tick_minutes} minutes)"
 }
 

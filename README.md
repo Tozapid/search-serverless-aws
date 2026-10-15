@@ -46,12 +46,24 @@ flowchart LR
 | Page | S3 + CloudFront, on its own domain or on the `*.cloudfront.net` address |
 | Sign-in | Cognito user pool, no self sign-up, optional TOTP; group `admins` |
 | API | API Gateway HTTP API with a Cognito JWT authorizer, Lambda `lambda/search.py` (Python, arm64) |
-| Schedule | EventBridge `rate(tick_minutes)` wakes the same Lambda; the sparse index `due` of the table lists the searches whose time has come |
+| Schedule | EventBridge `rate(tick_minutes)` wakes the same Lambda: it sends the mail whose time has come and starts the next collection of the queue; the sparse index `due` of the table lists the mail of the next hours |
 | Engines | `lambda/engines.py`: RSS and HTML pages, read as a browser without JavaScript reads them |
 | Data | DynamoDB on demand, one table: searches, what they sent, their history, combined digests, settings, the month's AI spend |
 | Mail | SES, with a configuration set that counts opens and leaves links alone (mail only) |
 | AI digest | Amazon Bedrock, Converse API |
 | Demo reset | Lambda `lambda/reset.py`, EventBridge `rate(1 hour)` |
+
+### Schedule and queue
+
+The time of a schedule is the time of its mail. The results are collected ahead of it, through a queue, and at that time the mail only goes out:
+
+- every `tick_minutes` (5 by default) EventBridge wakes the Lambda, which looks at the mail of the next `collect_lead_minutes` (180 by default, three hours) in the sparse index `due`;
+- a search joins the queue no earlier than `collect_lead_minutes` before its mail and not before its previous mail went out (`collect_after`), so that what that mail carried counts as sent;
+- a tick starts at most one collection, the one whose mail is due first, and none while another is under way: the engines hear from one search at a time, at least `tick_minutes` apart. The collection runs in an invocation of its own and keeps the new results and the AI digest in `sk = REPORT#<id>`; the page shows "results collected …";
+- when every engine fails and the mail is at least 30 minutes off, the search is collected again in 30 minutes (`retry_after`); a collection that has not finished in 15 minutes is taken for lost and started again;
+- at the time of the mail the tick moves `next_run` on with a conditional write (so a mail never goes twice, even when ticks overlap) and sends what was collected, less what Run now has sent since; the engines and the model are not asked again. A search not collected by then holds its mail back until it is, two hours at most; after that the mail is skipped and the history says "not collected in time".
+
+A change of the query, engines, region, period, number of results, language or AI sends the search back to the queue. Run now collects and sends at once, past the queue, and also sends the search back to it. The queue is shared by all users: one collection per tick fits `collect_lead_minutes / tick_minutes` searches per time of mail (36 by default); beyond that, mail goes out later, as it is collected.
 
 ### Search engines
 

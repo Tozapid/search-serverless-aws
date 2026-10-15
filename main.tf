@@ -44,7 +44,7 @@ locals {
   python = "3.14"
 
   # Known before the function exists, so that its policy may let it invoke
-  # itself: the tick hands every due search to its own invocation.
+  # itself: the tick hands each collection of the queue to its own invocation.
   function_arn = "arn:aws:lambda:${var.region}:${local.account_id}:function:${local.name}"
 
   csp = join("; ", [
