@@ -142,6 +142,8 @@ resource "aws_lambda_function" "reset" {
       ADMIN_GROUP             = aws_cognito_user_group.admins.name
       DEMO_EMAIL              = var.admin_email
       DEMO_PASSWORD_PARAMETER = aws_ssm_parameter.admin_password[0].name
+      # The examples join the queue as the function would put them there.
+      COLLECT_LEAD_MINUTES = tostring(var.collect_lead_minutes)
     }
   }
 

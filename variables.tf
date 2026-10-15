@@ -60,12 +60,23 @@ variable "reset_schedule" {
 
 variable "tick_minutes" {
   type        = number
-  default     = 60
-  description = "How often the scheduler looks for searches that are due. The hours of the schedules are as exact as this."
+  default     = 5
+  description = "How often the scheduler sends the mail that is due and starts the next collection of the queue: the gap between two searches asking the engines, and how late after its hour a mail may go."
 
   validation {
-    condition     = contains([15, 30, 60], var.tick_minutes)
-    error_message = "tick_minutes is 15, 30 or 60."
+    condition     = contains([1, 2, 3, 4, 5, 6, 10, 12, 15], var.tick_minutes)
+    error_message = "tick_minutes divides 60 and is at most 15."
+  }
+}
+
+variable "collect_lead_minutes" {
+  type        = number
+  default     = 180
+  description = "How long before its mail a search may be collected. The queue collects one search at a time, so this is the room it has; the results are this much older at most."
+
+  validation {
+    condition     = var.collect_lead_minutes >= 0 && var.collect_lead_minutes <= 720 && floor(var.collect_lead_minutes) == var.collect_lead_minutes
+    error_message = "collect_lead_minutes is a whole number from 0 to 720."
   }
 }
 

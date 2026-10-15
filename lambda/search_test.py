@@ -1,7 +1,8 @@
 import json
+import re
 import sys
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from unittest import mock
@@ -72,6 +73,8 @@ class FakeTable:
             ok = item is None
         elif condition == "next_run = :old":
             ok = item is not None and item.get("next_run") == values[":old"]
+        elif condition == "attribute_exists(pk) AND (attribute_not_exists(collecting) OR collecting < :stale)":
+            ok = item is not None and item.get("collecting", "") < values[":stale"]
         else:
             raise NotImplementedError(condition)
         if not ok:
@@ -86,14 +89,16 @@ class FakeTable:
         key = (Key["pk"], Key["sk"])
         self.check(key, ConditionExpression, ExpressionAttributeValues)
         item = self.items.setdefault(key, dict(Key))
-        action, rest = UpdateExpression.split(" ", 1)
-        for part in rest.split(","):
-            if action == "SET":
-                name, value = [side.strip() for side in part.split("=")]
-                item[name] = stored(ExpressionAttributeValues[value])
-            else:
-                name, value = part.split()
-                item[name] = stored(item.get(name, 0) + ExpressionAttributeValues[value])
+        for action, rest in re.findall(r"(SET|ADD|REMOVE) (.+?)(?= SET | ADD | REMOVE |$)", UpdateExpression):
+            for part in rest.split(","):
+                if action == "SET":
+                    name, value = [side.strip() for side in part.split("=")]
+                    item[name] = stored(ExpressionAttributeValues[value])
+                elif action == "REMOVE":
+                    item.pop(part.strip(), None)
+                else:
+                    name, value = part.split()
+                    item[name] = stored(item.get(name, 0) + ExpressionAttributeValues[value])
 
     def delete_item(self, Key):
         self.items.pop((Key["pk"], Key["sk"]), None)
@@ -1069,12 +1074,29 @@ class DigestTest(Base):
         self.assertFalse(data["digest"]["combined"])
         self.assertEqual(data["digest"]["schedule"]["hour"], 8)
 
-    def test_tick_starts_the_digest(self):
-        self.create()
+    def test_the_digest_waits_for_all_its_searches(self):
+        first = self.create(name="First")
+        second = self.create(name="Second", engines=["yahoo"])
         self.call("PUT", "/api/digest", {"combined": True})
-        self.table.items[("USER#" + OWNER, "DIGEST")]["next_run"] = "2020-01-01T00:00:00Z"
-        self.assertEqual(app.handler({"action": "tick"}, None), {"started": 1})
-        self.assertEqual(self.lambda_.calls, [{"action": "digest", "owner": OWNER, "trigger": "schedule"}])
+        start = app.now_utc()
+        when = app.iso(start + timedelta(hours=1))
+        self.table.items[("USER#" + OWNER, "DIGEST")].update(next_run=when, collect_after=app.iso(start))
+        for _ in range(2):
+            self.assertEqual(app.handler({"action": "tick"}, None)["started"], 1)
+            self.assertEqual(app.handler(self.lambda_.calls[-1], None)["status"], "prepared")
+        self.assertEqual({call["id"] for call in self.lambda_.calls}, {first["id"], second["id"]})
+        self.assertEqual({call["for"] for call in self.lambda_.calls}, {when})
+        # Nothing is sent before its time.
+        self.assertEqual(self.ses.sent, [])
+        with mock.patch.object(app, "now_utc", return_value=start + timedelta(minutes=61)):
+            self.assertEqual(app.handler({"action": "tick"}, None)["sent"], 1)
+        self.assertEqual(len(self.ses.sent), 1)
+        text = self.ses.sent[0]["Content"]["Simple"]["Body"]["Text"]["Data"]
+        self.assertIn("First — new: 3", text)
+        self.assertIn("Second — new: 2", text)
+        runs = self.call("GET", f"/api/searches/{second['id']}/runs")[1]["items"]
+        self.assertEqual((runs[0]["trigger"], runs[0]["sent"]), ("digest", True))
+        self.assertIn("collected", runs[0])
 
     def test_one_message_for_all_searches(self):
         first = self.create(name="First", ai=True)
@@ -1268,17 +1290,156 @@ class AdminTest(Base):
 
 
 class TickTest(Base):
-    def test_tick_starts_due_searches_once(self):
-        due = self.create()
-        later = self.create()
-        key = ("USER#" + OWNER, "SEARCH#" + due["id"])
-        self.table.items[key]["next_run"] = "2020-01-01T00:00:00Z"
-        self.assertEqual(app.handler({"action": "tick"}, None), {"started": 1})
-        self.assertEqual(self.lambda_.calls, [{"action": "run", "owner": OWNER, "id": due["id"], "trigger": "schedule"}])
-        self.assertGreater(self.table.items[key]["next_run"], app.iso(app.now_utc()))
-        # The next tick finds nothing due.
-        self.assertEqual(app.handler({"action": "tick"}, None), {"started": 0})
-        self.assertNotEqual(later["id"], due["id"])
+    def due(self, search, when, opens=None):
+        """The search's mail at `when`, its collection open from `opens`."""
+        self.table.items[("USER#" + OWNER, "SEARCH#" + search["id"])].update(
+            next_run=app.iso(when), collect_after=app.iso(opens or when - timedelta(hours=3)))
+
+    def item(self, search):
+        return self.table.items[("USER#" + OWNER, "SEARCH#" + search["id"])]
+
+    def tick(self, moment=None):
+        if moment is None:
+            return app.handler({"action": "tick"}, None)
+        with mock.patch.object(app, "now_utc", return_value=moment):
+            return app.handler({"action": "tick"}, None)
+
+    def test_one_collection_at_a_time_soonest_mail_first(self):
+        start = app.now_utc()
+        later = self.create(name="Later")
+        sooner = self.create(name="Sooner")
+        self.due(later, start + timedelta(hours=2))
+        self.due(sooner, start + timedelta(hours=1))
+        self.assertEqual(self.tick(), {"sent": 0, "started": 1, "queued": 1})
+        self.assertEqual(self.lambda_.calls, [{"action": "collect", "owner": OWNER, "id": sooner["id"], "for": app.iso(start + timedelta(hours=1))}])
+        # Nothing else starts while it runs.
+        self.assertEqual(self.tick(), {"sent": 0, "started": 0, "queued": 1})
+        self.assertEqual(app.handler(self.lambda_.calls[-1], None), {"status": "prepared", "new": 3})
+        self.assertNotIn("collecting", self.item(sooner))
+        # Collected, it waits for its time without a mail.
+        self.assertEqual(self.ses.sent, [])
+        self.assertEqual(self.tick(), {"sent": 0, "started": 1, "queued": 0})
+        self.assertEqual(self.lambda_.calls[-1]["id"], later["id"])
+        # A collection that never came back is taken for lost.
+        self.assertEqual(self.tick(start + timedelta(minutes=16))["started"], 1)
+
+    def test_the_queue_opens_ahead_of_the_mail(self):
+        start = app.now_utc()
+        search = self.create()
+        self.due(search, start + timedelta(hours=4))
+        self.assertEqual(self.tick(), {"sent": 0, "started": 0, "queued": 0})
+        self.assertEqual(self.tick(start + timedelta(hours=1, minutes=1))["started"], 1)
+
+    def test_the_mail_goes_at_its_time_from_what_was_collected(self):
+        start = app.now_utc()
+        search = self.create(ai=True)
+        self.due(search, start + timedelta(hours=1))
+        self.tick()
+        fake = FakeBedrock()
+        with mock.patch.object(app, "_bedrock", fake):
+            app.handler(self.lambda_.calls[-1], None)
+            self.assertEqual(len(fake.requests), 1)
+            status, data = self.call("GET", f"/api/searches/{search['id']}")
+            self.assertEqual(data["prepared_at"], app.iso(start))
+            # At its time: the mail, without asking the engines or the model again.
+            with mock.patch.object(engines, "search", side_effect=AssertionError("asked again")):
+                self.assertEqual(self.tick(start + timedelta(hours=1, minutes=2)), {"sent": 1, "started": 0, "queued": 0})
+            self.assertEqual(len(fake.requests), 1)
+        self.assertEqual(len(self.ses.sent), 1)
+        self.assertIn("Коротко о главном", self.ses.sent[0]["Content"]["Simple"]["Body"]["Text"]["Data"])
+        runs = self.call("GET", f"/api/searches/{search['id']}/runs")[1]["items"]
+        self.assertEqual((runs[0]["trigger"], runs[0]["sent"], runs[0]["new"], runs[0]["collected"]), ("schedule", True, 3, app.iso(start)))
+        item = self.item(search)
+        self.assertGreater(item["next_run"], app.iso(start + timedelta(hours=1)))
+        self.assertNotIn("prepared", item)
+        self.assertNotIn(("USER#" + OWNER, "REPORT#" + search["id"]), self.table.items)
+        # The next collection opens no earlier than now.
+        self.assertGreaterEqual(item["collect_after"], app.iso(start + timedelta(hours=1, minutes=2)))
+        self.assertEqual(len(self.table.items[("USER#" + OWNER, "SEEN#" + search["id"])]["keys"]), 3)
+        # Once only.
+        self.assertEqual(self.tick(start + timedelta(hours=1, minutes=3))["sent"], 0)
+
+    def test_what_went_out_since_is_left_out(self):
+        start = app.now_utc()
+        search = self.create(ai=True)
+        self.due(search, start + timedelta(hours=1))
+        self.tick()
+        with mock.patch.object(app, "_bedrock", FakeBedrock()):
+            app.handler(self.lambda_.calls[-1], None)
+        self.table.items[("USER#" + OWNER, "SEEN#" + search["id"])] = {
+            "pk": "USER#" + OWNER, "sk": "SEEN#" + search["id"], "keys": [engines.url_key("https://other.example/3")]}
+        self.tick(start + timedelta(hours=1, minutes=1))
+        text = self.ses.sent[0]["Content"]["Simple"]["Body"]["Text"]["Data"]
+        self.assertNotIn("Third", text)
+        # The AI digest numbered the results it was written for.
+        self.assertNotIn("Коротко о главном", text)
+
+    def test_run_now_sends_the_collected_back_to_the_queue(self):
+        start = app.now_utc()
+        search = self.create()
+        self.due(search, start + timedelta(hours=1))
+        self.tick()
+        app.handler(self.lambda_.calls[-1], None)
+        app.run_search(OWNER, search["id"], "manual")
+        self.assertNotIn("prepared", self.item(search))
+        self.assertNotIn(("USER#" + OWNER, "REPORT#" + search["id"]), self.table.items)
+        self.assertEqual(self.tick()["started"], 1)
+
+    def test_a_change_of_the_query_collects_again(self):
+        start = app.now_utc()
+        search = self.create()
+        self.due(search, start + timedelta(hours=1))
+        self.tick()
+        app.handler(self.lambda_.calls[-1], None)
+        self.call("PATCH", f"/api/searches/{search['id']}", {"name": "Renamed"})
+        self.assertIn("prepared", self.item(search))
+        self.call("PATCH", f"/api/searches/{search['id']}", {"query": "other"})
+        self.assertNotIn("prepared", self.item(search))
+        self.assertEqual(self.tick()["started"], 1)
+
+    def test_engines_that_all_fail_are_asked_again_later(self):
+        start = app.now_utc()
+        search = self.create(engines=["brave"])
+        self.due(search, start + timedelta(hours=2))
+        self.tick()
+        self.assertEqual(app.handler(self.lambda_.calls[-1], None), {"status": "retry"})
+        item = self.item(search)
+        self.assertNotIn("prepared", item)
+        self.assertNotIn("collecting", item)
+        self.assertEqual(self.tick()["started"], 0)
+        self.assertEqual(self.tick(start + timedelta(minutes=31))["started"], 1)
+        # Too close to the mail: it goes with the errors.
+        with mock.patch.object(app, "now_utc", return_value=start + timedelta(hours=1, minutes=45)):
+            self.assertEqual(app.handler(self.lambda_.calls[-1], None)["status"], "prepared")
+
+    def test_a_mail_not_collected_in_time_is_missed(self):
+        start = app.now_utc()
+        search = self.create()
+        self.due(search, start - timedelta(hours=3))
+        self.assertEqual(self.tick()["sent"], 1)
+        self.assertEqual(self.ses.sent, [])
+        runs = self.call("GET", f"/api/searches/{search['id']}/runs")[1]["items"]
+        self.assertEqual(runs[0]["status"], "missed")
+        self.assertGreater(self.item(search)["next_run"], app.iso(start))
+
+    def test_an_overdue_mail_waits_for_its_collection(self):
+        start = app.now_utc()
+        search = self.create()
+        self.due(search, start - timedelta(minutes=10))
+        self.assertEqual(self.tick(), {"sent": 0, "started": 1, "queued": 0})
+        app.handler(self.lambda_.calls[-1], None)
+        self.assertEqual(self.tick()["sent"], 1)
+        self.assertEqual(len(self.ses.sent), 1)
+
+    def test_a_moved_mail_drops_its_collection(self):
+        start = app.now_utc()
+        search = self.create()
+        self.due(search, start + timedelta(hours=1))
+        self.tick()
+        job = self.lambda_.calls[-1]
+        self.due(search, start + timedelta(hours=2))
+        self.assertEqual(app.handler(job, None), {"skipped": "moved"})
+        self.assertNotIn("collecting", self.item(search))
 
 
 if __name__ == "__main__":

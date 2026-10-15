@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.1.0
+
+### Changed
+
+- Results are collected ahead of the mail, and at the time of the schedule the mail only goes out. A search joins a queue `collect_lead_minutes` (three hours by default) before its mail; the tick, now every 5 minutes instead of 60 (`tick_minutes`), starts at most one collection and none while another runs, so the engines never hear from several searches at once. The collected results and their AI digest wait for their time in `REPORT#<id>`. When every engine fails, the search is collected again in 30 minutes while there is time before the mail. The combined digest collects each of its searches in the same queue. The page shows when the results of the next mail were collected, and the history when each run was.
+
 ## v1.0.0
 
 ### Added

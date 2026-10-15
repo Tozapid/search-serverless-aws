@@ -1,6 +1,7 @@
 # One table; the data model is in the docstring of lambda/search.py. An active
-# search also carries due = "1" and next_run, so the sparse index "due" lists
-# exactly the searches to run.
+# search (or a combined digest in place of its user's searches) also carries
+# due = "1" and next_run, the time of its mail, so the sparse index "due"
+# lists exactly the mail to collect and send.
 resource "aws_dynamodb_table" "main" {
   #checkov:skip=CKV_AWS_119:An AWS owned key avoids a dedicated KMS charge.
   #checkov:skip=CKV_AWS_28:Point-in-time recovery is on outside the demo, which is rebuilt every hour.
