@@ -4,4 +4,4 @@
 # for the SOCKS proxy of the engines (pure Python). Bedrock is called with
 # the boto3 of the runtime.
 PySocks==1.7.1
-tzdata==2026.5
+tzdata==2026.6
