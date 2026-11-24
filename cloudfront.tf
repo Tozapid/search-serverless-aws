@@ -102,7 +102,7 @@ resource "aws_cloudfront_distribution" "web" {
   }
 
   origin {
-    domain_name = "${aws_apigatewayv2_api.http.id}.execute-api.${var.region}.amazonaws.com"
+    domain_name = "${aws_apigatewayv2_api.http.id}.execute-api.${local.region}.amazonaws.com"
     origin_id   = "api"
 
     custom_origin_config {

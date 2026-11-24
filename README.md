@@ -89,36 +89,56 @@ DuckDuckGo and Brave Search answer programs with a captcha or HTTP 429, and not 
 
 A search with the AI digest on sends its new results (up to 60, with titles, links and snippets) to a model of Amazon Bedrock through the Converse API. The model is one variable, `ai_model` — the inference profile `eu.amazon.nova-2-lite-v1:0` by default, which keeps the requests in EU Regions; Converse is the same for every model of Bedrock. The results are passed as untrusted data, not as instructions. The month's spend is counted in DynamoDB from the tokens of every answer, at `ai_price_per_mtok`, and the digest stops at `ai_monthly_limit_usd` until the next month; Settings → AI shows it. A third-party model from AWS Marketplace also needs `ai_marketplace_product_id`.
 
-## Test environment and production
+## Use the module
 
-The defaults deploy the **test environment**, the public demo above. It is the same code with mail turned off:
+The root of this repository is the module. It makes no providers: the caller passes `aws` (the region of everything but CloudFront) and `aws.global` (`us-east-1`, CloudFront and its certificate). Every release of [`CHANGELOG.md`](CHANGELOG.md) is a tag `vX.Y.Z`; a site takes a newer version by a newer `ref`, and Settings → Version shows the version of the module and the releases after it.
 
-- no domain: the page answers at its `*.cloudfront.net` address with CloudFront's certificate, and no DNS is touched;
-- no sender address: nothing is made in SES, and a run does everything but send — its status is "collected, no mail" and its results and AI digest are in the history;
-- the sign-in is published and filled in (`demo = true`), password change and two-factor authentication are hidden, and the administration is read-only;
-- the hourly reset (`reset_schedule`) rebuilds everything from `seed/seed.json`, but keeps the month's AI spend, so the limit holds;
-- point-in-time recovery is off, and the page bucket is deleted with its content on `terraform destroy`.
+```hcl
+module "search" {
+  source = "git::https://github.com/Tozapid/search-serverless-aws.git?ref=v1.3.0"
 
-**Production** turns mail on with a sender address. Start from [`examples/production.tfvars`](examples/production.tfvars):
+  providers = {
+    aws        = aws
+    aws.global = aws.global
+  }
 
-| Variable | Test environment (default) | Production |
+  name              = "search"
+  domain_name       = "search.example.com"
+  route53_zone_name = "example.com"
+  admin_email       = "you@example.com"
+  sender_address    = "search@example.com"
+}
+```
+
+[`examples/production/main.tf`](examples/production/main.tf) is that with its providers and backend. The inputs:
+
+| Variable | Default | What it is |
 | --- | --- | --- |
-| `name` | `search-serverless` | `search` — the prefix of every resource |
-| `demo` | `true` | `false` |
-| `domain_name`, `route53_zone_name` | `""` — the CloudFront address | `search.example.com`, `example.com` |
-| `sender_address` | `""` — no mail | `search@example.com`, on a domain verified in SES |
-| `admin_email` | `demo@example.com` | your address |
-| `admin_password` | `Demo-Password-1` | `""` — Cognito mails a temporary password |
-| `reset_schedule` | `rate(1 hour)` | `""` — no reset, no examples |
-| `max_searches_per_user` | `10` | `20` |
-| `ai_monthly_limit_usd` | `0.2` | as you like |
+| `name` | — | Prefix of every resource name; the page bucket adds the account id |
+| `admin_email` | — | The first user, an administrator |
+| `admin_password` | `""` | Its permanent password; empty: Cognito mails a temporary one |
+| `domain_name`, `route53_zone_name` | `""` | The page's name and its public Route 53 zone; empty: the `*.cloudfront.net` address (a zone left empty with a domain: the records by hand, see below) |
+| `sender_address` | `""` | From address of the digests, on a domain verified in SES; empty: no mail, a run keeps its results in the history |
+| `totp_issuer` | `""` | Name of the site in an authenticator app; empty: Search and the host of the page |
+| `demo` | `false` | Public demo: the sign-in published and filled in, no password change or two-factor authentication, read-only administration |
+| `reset_schedule` | `""` | The hourly reset of the demo (`rate(1 hour)` there) |
+| `access_logs_bucket` | `""` | Bucket of the access logs (see [Access logs](#access-logs)) |
+| `max_searches_per_user`, `tick_minutes`, `collect_lead_minutes` | `10`, `5`, `180` | Searches per user, the schedule and the queue |
+| `ai_enabled`, `ai_model`, `ai_monthly_limit_usd` and the other `ai_*` | see `variables.tf` | The AI digest and its monthly limit |
+| `releases_repository` | `Tozapid/search-serverless-aws` | The releases Settings → Version compares with |
+
+The zip of the function and its layer are built at plan time in `.build/` of the root module, not of the module: a CI that carries what a plan makes to its apply leaves `.terraform/`, where a module fetched from git lives, behind. The runner needs `python3` and access to PyPI for the layer.
 
 Steps to production:
 
 1. Pick a fresh `name` (and state key): production is a separate deployment, not a change of the demo.
 2. Verify the domain of `sender_address` in SES in the same region (DKIM; a custom MAIL FROM helps); the plan stops while it is not verified. While the SES account is in the sandbox, digests reach only verified addresses: the page shows it and verifies an address on request. Request production access in the SES console to lift it.
-3. With `route53_zone_name` the stack validates the certificate and writes the alias records. Without it, the first apply waits for the certificate: add the records of the output `certificate_validation_records` at your DNS host while it waits, then a CNAME from `domain_name` to the output `cloudfront_url`.
+3. With `route53_zone_name` the module validates the certificate and writes the alias records. Without it, the first apply waits for the certificate: add the records of the output `certificate_validation_records` at your DNS host while it waits, then a CNAME from `domain_name` to the output `cloudfront_url`.
 4. Sign in with the temporary password Cognito mails to `admin_email`. Invite the others in Settings → Users.
+
+### The demo
+
+[`demo/`](demo) is the root module of the public demo: the module from `../` with `demo = true`, the published sign-in, the hourly reset and no domain, so it answers at its CloudFront address and touches no DNS; it has no sender address, so nothing is made in SES and a run does everything but send (its status is "collected, no mail"); the reset keeps the month's AI spend, so the limit holds; point-in-time recovery is off, and the page bucket goes with its content on `terraform destroy`.
 
 ## Deploy
 
@@ -132,29 +152,29 @@ Steps to production:
 
 ### GitHub Actions
 
-[`.github/workflows/terraform.yml`](.github/workflows/terraform.yml) only calls the shared workflow of [Tozapid/demo-ci-cd-skeleton](https://github.com/Tozapid/demo-ci-cd-skeleton):
+[`.github/workflows/terraform.yml`](.github/workflows/terraform.yml) only calls the shared workflow of [Tozapid/demo-ci-cd-skeleton](https://github.com/Tozapid/demo-ci-cd-skeleton), with `working_directory: demo`:
 
-- every push and pull request: `terraform fmt` and `terraform validate`; the Lambda tests; the page's syntax check;
+- every push and pull request: `terraform fmt` and `terraform validate` of `demo/`, and with it of the module; the Lambda tests; the page's syntax check;
 - pull requests from this repository: `terraform plan` in the environment `demo`;
 - a preview of a pull request, by hand: Run workflow with `preview` = its number deploys its last push once more as `search-serverless-pr<number>`, with its own state, and comments the address on it; it is destroyed when the pull request is merged or closed, by hand (`destroy`), or by the daily sweep, which also takes those not deployed for a week;
 - a push to `main` or a manual run: plan and apply in the environment `demo`. The job stops if the plan would destroy or replace a bucket, the table or the user pool. A manual run from another branch deploys that branch over the same site until `main` is deployed again;
-- after `main` is deployed: the GitHub release of the newest `CHANGELOG.md` entry, once.
+- after `main` is deployed: the tag and the GitHub release of the newest `CHANGELOG.md` entry, once. Every version is a tag the sites pin the module to.
 
 The jobs get AWS credentials from GitHub's OIDC token: no AWS key is stored anywhere.
 
 ### Versions and releases
 
-Every entry of [`CHANGELOG.md`](CHANGELOG.md) starts with its version, optionally followed by a date or a title (`## v1.1.0`, `## v1.1.0 — 2026-10-20`), with the changes under `### Added`, `### Changed`, `### Fixed` and `### Security`, newest first. The site takes its version from the newest entry when Terraform deploys it, and the release job makes it a tag and a GitHub release. Settings → Version reads the releases of `releases_repository` from the Atom feed of the GitHub releases and keeps them an hour.
+Every entry of [`CHANGELOG.md`](CHANGELOG.md) starts with its version, optionally followed by a date or a title (`## v0.2.0`, `## v0.2.0 — 2026-11-01`), with the changes under `### Added`, `### Changed`, `### Fixed` and `### Security`, newest first. A site takes its version from the newest entry of the module it runs, and the release job makes it a tag and a GitHub release. A change that a site has to take over is a new entry, and so a new tag. Settings → Version reads the releases of `releases_repository` and shows those after the version of the site.
 
 ### From a workstation
 
 ```bash
+cd demo
 terraform init \
   -backend-config="bucket=<state bucket>" \
   -backend-config="key=search-serverless-aws/terraform.tfstate" \
   -backend-config="region=eu-central-1"
-terraform apply                                   # the test environment
-terraform apply -var-file=terraform.tfvars        # production, see above
+terraform apply
 ```
 
 ## Access logs
@@ -204,7 +224,9 @@ The tests use no network: the engines, DynamoDB, SES, Lambda, Cognito and Bedroc
 | `cloudfront.tf`, `dns.tf`, `web.tf`, `web/` | The distribution, the domain, the page and its translations (`i18n.js`) |
 | `ses.tf` | The SES configuration set of the digests (mail only) |
 | `reset.tf`, `lambda/reset.py`, `seed/seed.json` | The hourly reset of the demo and its examples |
-| `examples/production.tfvars` | A starting point for production |
+| `main.tf`, `terraform.tf`, `variables.tf`, `outputs.tf` | The module: its providers (`aws`, `aws.global`), inputs and outputs |
+| `demo/` | The public demo, a call of the module, and the moves of its state |
+| `examples/production/` | A starting point for production |
 
 ## Limitations
 

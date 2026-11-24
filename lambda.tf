@@ -17,7 +17,7 @@ data "archive_file" "app" {
     content  = file("${path.module}/lambda/engines.py")
     filename = "engines.py"
   }
-  output_path      = "${path.module}/.build/search.zip"
+  output_path      = "${path.root}/.build/${local.name}-search.zip"
   output_file_mode = "0644"
 }
 
@@ -30,7 +30,7 @@ data "external" "layer" {
   program = ["python3", "${path.module}/lambda/build_layer.py"]
   query = {
     requirements = "${path.module}/lambda/requirements.txt"
-    target       = "${path.module}/.build/layer"
+    target       = "${path.root}/.build/${local.name}-layer"
     python       = local.python
   }
 }
@@ -38,7 +38,7 @@ data "external" "layer" {
 data "archive_file" "layer" {
   type             = "zip"
   source_dir       = data.external.layer.result.dir
-  output_path      = "${path.module}/.build/search_layer.zip"
+  output_path      = "${path.root}/.build/${local.name}-search_layer.zip"
   output_file_mode = "0644"
 }
 

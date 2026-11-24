@@ -1,26 +1,14 @@
-provider "aws" {
-  region = var.region
-
-  default_tags {
-    tags = var.tags
-  }
-}
-
-# CloudFront and its certificates live in us-east-1.
-provider "aws" {
-  alias  = "global"
-  region = "us-east-1"
-
-  default_tags {
-    tags = var.tags
-  }
-}
-
+# The module makes no providers: the caller passes aws, in the region of
+# every resource but CloudFront, and aws.global in us-east-1, where CloudFront
+# and its certificate live (see README).
 data "aws_caller_identity" "current" {}
+
+data "aws_region" "current" {}
 
 locals {
   name       = var.name
   account_id = data.aws_caller_identity.current.account_id
+  region     = data.aws_region.current.region
   web_bucket = "${local.name}-web-${local.account_id}"
 
   # Mail is on with a sender address. Without one (the demo) a run does
@@ -45,7 +33,7 @@ locals {
 
   # Known before the function exists, so that its policy may let it invoke
   # itself: the tick hands each collection of the queue to its own invocation.
-  function_arn = "arn:aws:lambda:${var.region}:${local.account_id}:function:${local.name}"
+  function_arn = "arn:aws:lambda:${local.region}:${local.account_id}:function:${local.name}"
 
   csp = join("; ", [
     "default-src 'self'",
@@ -53,7 +41,7 @@ locals {
     "script-src 'self' https://cdn.jsdelivr.net/npm/amazon-cognito-identity-js@6.3.15/ https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/",
     "style-src 'self'",
     "img-src 'self' data:",
-    "connect-src 'self' https://cognito-idp.${var.region}.amazonaws.com",
+    "connect-src 'self' https://cognito-idp.${local.region}.amazonaws.com",
     "object-src 'none'",
     "base-uri 'self'",
     "form-action 'self'",

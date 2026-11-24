@@ -29,6 +29,11 @@ output "user_pool_id" {
   value       = aws_cognito_user_pool.main.id
 }
 
+output "cognito_client_id" {
+  description = "Public app client id used by the browser"
+  value       = aws_cognito_user_pool_client.web.id
+}
+
 output "function_name" {
   description = "Lambda function of the API and the searches"
   value       = aws_lambda_function.app.function_name
@@ -37,4 +42,9 @@ output "function_name" {
 output "table_name" {
   description = "DynamoDB table with the searches, their history and the settings"
   value       = aws_dynamodb_table.main.name
+}
+
+output "admin_username" {
+  description = "Email of the first user"
+  value       = var.admin_email
 }
