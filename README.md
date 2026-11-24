@@ -10,7 +10,7 @@ Everything is Terraform and AWS managed services: no third-party API, no API key
 
 Sign in with `demo@example.com` / `Demo-Password-1` (the fields are filled in for you).
 
-The demo has **no mail**: it never sends a single message. Everything else works, on real search engines: create, edit, switch off and delete searches, preview what the engines find now, run a search now and read its results and AI digest in its history, turn on the combined digest, switch the language. The demo user is an administrator, so the users and the proxies are there to look at; changing them is not. The demo is public and goes back to its initial state **every hour**: searches, their history and the settings are wiped, the examples of [`seed/seed.json`](seed/seed.json) are written again, the demo password is put back and any other user is deleted. Changing the password and two-factor authentication are hidden in the demo, so no visitor can lock the others out. The AI digest of the demo has a small monthly limit; once it is spent, runs go on without it until the next month.
+The demo has **no mail**: it never sends a single message. Everything else works, on real search engines: create, edit, switch off and delete searches, preview what the engines find now, run a search now and read its results and AI digest in its history, turn on the combined digest, switch the language. The demo user is an administrator, so the users and the proxies are there to look at; changing them is not. The demo is public and goes back to its initial state **six hours after the first change** (a demo nobody changes is not reset): searches, their history and the settings are wiped, the examples of [`seed/seed.json`](seed/seed.json) are written again, the demo password is put back and any other user is deleted. Changing the password and two-factor authentication are hidden in the demo, so no visitor can lock the others out. The AI digest of the demo has a small monthly limit; once it is spent, runs go on without it until the next month.
 
 ## Features
 
@@ -38,7 +38,7 @@ flowchart LR
   L -->|RSS, HTML| SE[Search engines]
   L -->|Converse| BR[Amazon Bedrock]
   L -->|SendEmail| SES[SES]
-  EB2[EventBridge, demo only] --> R[Lambda: hourly reset]
+  EB2[EventBridge Scheduler, demo only, after a change] --> R[Lambda: reset]
 ```
 
 | Part | Service |
@@ -51,7 +51,7 @@ flowchart LR
 | Data | DynamoDB on demand, one table: searches, what they sent, their history, combined digests, settings, the month's AI spend |
 | Mail | SES, with a configuration set that counts opens and leaves links alone (mail only) |
 | AI digest | Amazon Bedrock, Converse API |
-| Demo reset | Lambda `lambda/reset.py`, EventBridge `rate(1 hour)` |
+| Demo reset | Lambda `lambda/reset.py`, a one-off EventBridge Scheduler schedule that the first change makes |
 
 ### Schedule and queue
 
@@ -95,7 +95,7 @@ The root of this repository is the module. It makes no providers: the caller pas
 
 ```hcl
 module "search" {
-  source = "git::https://github.com/Tozapid/search-serverless-aws.git?ref=v1.3.1"
+  source = "git::https://github.com/Tozapid/search-serverless-aws.git?ref=v1.4.0"
 
   providers = {
     aws        = aws
@@ -121,7 +121,7 @@ module "search" {
 | `sender_address` | `""` | From address of the digests, on a domain verified in SES; empty: no mail, a run keeps its results in the history |
 | `totp_issuer` | `""` | Name of the site in an authenticator app; empty: Search and the host of the page |
 | `demo` | `false` | Public demo: the sign-in published and filled in, no password change or two-factor authentication, read-only administration |
-| `reset_schedule` | `""` | The hourly reset of the demo (`rate(1 hour)` there) |
+| `reset_delay_hours` | `0` | Hours after the first change that the demo is reset (`6` there); `0`: no reset |
 | `access_logs_bucket` | `""` | Bucket of the access logs (see [Access logs](#access-logs)) |
 | `max_searches_per_user`, `tick_minutes`, `collect_lead_minutes` | `10`, `5`, `180` | Searches per user, the schedule and the queue |
 | `ai_enabled`, `ai_model`, `ai_monthly_limit_usd` and the other `ai_*` | see `variables.tf` | The AI digest and its monthly limit |
@@ -138,7 +138,7 @@ Steps to production:
 
 ### The demo
 
-[`demo/`](demo) is the root module of the public demo: the module from `../` with `demo = true`, the published sign-in, the hourly reset and no domain, so it answers at its CloudFront address and touches no DNS; it has no sender address, so nothing is made in SES and a run does everything but send (its status is "collected, no mail"); the reset keeps the month's AI spend, so the limit holds; point-in-time recovery is off, and the page bucket goes with its content on `terraform destroy`.
+[`demo/`](demo) is the root module of the public demo: the module from `../` with `demo = true`, the published sign-in, the reset six hours after a change and no domain, so it answers at its CloudFront address and touches no DNS; it has no sender address, so nothing is made in SES and a run does everything but send (its status is "collected, no mail"); the reset keeps the month's AI spend, so the limit holds; point-in-time recovery is off, and the page bucket goes with its content on `terraform destroy`.
 
 ## Deploy
 
@@ -223,7 +223,7 @@ The tests use no network: the engines, DynamoDB, SES, Lambda, Cognito and Bedroc
 | `dynamodb.tf`, `s3.tf` | The table and the page bucket |
 | `cloudfront.tf`, `dns.tf`, `web.tf`, `web/` | The distribution, the domain, the page and its translations (`i18n.js`) |
 | `ses.tf` | The SES configuration set of the digests (mail only) |
-| `reset.tf`, `lambda/reset.py`, `seed/seed.json` | The hourly reset of the demo and its examples |
+| `reset.tf`, `lambda/reset.py`, `seed/seed.json` | The reset of the demo and its examples |
 | `main.tf`, `terraform.tf`, `variables.tf`, `outputs.tf` | The module: its providers (`aws`, `aws.global`), inputs and outputs |
 | `demo/` | The public demo, a call of the module, and the moves of its state |
 | `examples/production/` | A starting point for production |

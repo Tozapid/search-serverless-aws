@@ -20,7 +20,7 @@ locals {
   custom_domain = var.domain_name != ""
   site_url      = local.custom_domain ? "https://${var.domain_name}" : "https://${aws_cloudfront_distribution.web.domain_name}"
 
-  reset = var.reset_schedule != ""
+  reset = var.reset_delay_hours > 0
 
   # The version of this deployment: the newest entry of CHANGELOG.md.
   version = regex("(?m)^## (v[0-9]+\\.[0-9]+\\.[0-9]+)(?:\\s|$)", file("${path.module}/CHANGELOG.md"))[0]
