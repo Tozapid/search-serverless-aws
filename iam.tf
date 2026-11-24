@@ -71,7 +71,7 @@ data "aws_iam_policy_document" "lambda" {
       # The sender domain, in the SES sandbox the verified recipients, and the
       # configuration set of the digests.
       resources = [
-        "arn:aws:ses:${var.region}:${local.account_id}:identity/*",
+        "arn:aws:ses:${local.region}:${local.account_id}:identity/*",
         aws_sesv2_configuration_set.digests[0].arn,
       ]
 

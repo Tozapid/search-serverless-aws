@@ -20,7 +20,7 @@
     digest: null,
   };
   // The name of the site in authenticator apps.
-  const ISSUER = "Search " + window.location.hostname;
+  const ISSUER = config.issuer || "Search " + window.location.hostname;
   // The open source project of this page, linked from the sign-in page.
   const REPOSITORY = "https://github.com/Tozapid/search-serverless-aws";
   // The language is the Cognito attribute "locale" of the user; the browser

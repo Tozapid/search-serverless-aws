@@ -1,20 +1,13 @@
 terraform {
-  # 1.10 brings the S3 lockfile (use_lockfile).
   required_version = ">= 1.10.0"
-
-  # Partial configuration: bucket, key and region come from terraform init
-  # (see README). The S3 lockfile replaces a DynamoDB lock table.
-  backend "s3" {
-    encrypt      = true
-    use_lockfile = true
-  }
 
   required_providers {
     aws = {
       source = "hashicorp/aws"
       # 6.69.0 cannot publish a Lambda layer ("decomposing request:
       # bufio.Scanner: token too long", hashicorp/terraform-provider-aws#50474).
-      version = "~> 6.0, != 6.69.0"
+      version               = "~> 6.0, != 6.69.0"
+      configuration_aliases = [aws.global]
     }
     archive = {
       source  = "hashicorp/archive"
@@ -24,10 +17,6 @@ terraform {
     external = {
       source  = "hashicorp/external"
       version = "~> 2.3"
-    }
-    random = {
-      source  = "hashicorp/random"
-      version = "~> 3.6"
     }
   }
 }
