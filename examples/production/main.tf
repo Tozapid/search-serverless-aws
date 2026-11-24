@@ -27,7 +27,7 @@ provider "aws" {
 }
 
 module "search" {
-  source = "git::https://github.com/Tozapid/search-serverless-aws.git?ref=v1.3.1"
+  source = "git::https://github.com/Tozapid/search-serverless-aws.git?ref=v1.4.0"
 
   providers = {
     aws        = aws

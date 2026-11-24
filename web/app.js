@@ -314,7 +314,7 @@
       el("h1", {}, t("brand")),
       demo.email ? el("p", { class: "demo-note" }, [
         t("demo.signIn", { email: demo.email, password: demo.password }),
-        demo.reset ? " " + t("demo.reset") : "",
+        demo.reset ? " " + t("demo.reset", { hours: demo.reset }) : "",
       ]) : null,
       el("label", {}, [t("login.email"), email]),
       el("label", {}, [t("login.password"), password]),
@@ -489,7 +489,7 @@
 
   function sandboxNote() {
     if (!state.me.mail) {
-      return el("p", { class: "note" }, [el("strong", {}, t("noMail.title")), t(config.demo && config.demo.reset ? "noMail.textReset" : "noMail.text")]);
+      return el("p", { class: "note" }, [el("strong", {}, t("noMail.title")), t(config.demo && config.demo.reset ? "noMail.textReset" : "noMail.text", { hours: config.demo && config.demo.reset })]);
     }
     if (state.production) return null;
     return el("p", { class: "note" }, [el("strong", {}, t("sandbox.title")), t("sandbox.text")]);
