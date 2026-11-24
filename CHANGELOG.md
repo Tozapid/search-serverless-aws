@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.3.1
+
+### Removed
+
+- `demo/moved.tf`: the state of the demo already keeps its resources under `module.search`. A site that still has the resources at the top of its state moves them in its own root module before taking this version.
+
 ## v1.3.0
 
 ### Changed
